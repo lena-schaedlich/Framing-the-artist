@@ -265,7 +265,7 @@ correctly_predicted <- ml_fit$pred$pred == ml_fit$pred$obs
 cat(sprintf("LOO CV performance: %.2f [%.2f, %.2f]", mean(correctly_predicted), binom::binom.exact(sum(correctly_predicted), length(correctly_predicted))$lower, binom::binom.exact(sum(correctly_predicted), length(correctly_predicted))$upper))
 ```
 
-Variable important
+Variable importance
 ```{r}
 varImp(ml_fit)
 ```
