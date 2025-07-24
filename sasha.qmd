@@ -1,0 +1,272 @@
+---
+title: "analysis"
+format: html
+---
+
+```{r setup}
+library(tidyverse)
+
+library(binom)
+library(caret)
+library(cmdstanr)
+library(glue)
+library(kilter) # devtools::install_github("alexander-pastukhov/kilter", dependencies=TRUE)
+library(patchwork)
+```
+
+
+Definitions
+```{r}
+artists <- c("B" = "Bodett", "H" = "Hammer", "L" = "Lohse-Wächter", "W" = "Wölfli")
+
+conditions_df <-
+  bind_rows(
+    tibble(Condition = 1,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("schizophrenic", "schizophrenic", "neutral", "neutral")),
+    tibble(Condition = 2,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("schizophrenic", "neutral", "schizophrenic", "neutral")),
+    tibble(Condition = 3,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("schizophrenic", "neutral", "neutral", "schizophrenic")),
+    tibble(Condition = 4,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("neutral", "schizophrenic", "schizophrenic", "neutral")),
+    tibble(Condition = 5,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("neutral", "schizophrenic", "neutral", "schizophrenic")),
+    tibble(Condition = 6,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("neutral", "neutral", "schizophrenic", "schizophrenic"))
+  ) |>
+  mutate(Artist = factor(Artist, levels = artists),
+         Presentation = factor(Presentation, levels = c("neutral", "schizophrenic")))
+
+aesthemos_questions_de = c(
+  "schön", "intellektuell", "erfreut", "beruhigt", "neugierig",
+  "gefallen", "faszinieren", "wunderbar", "belebend", "geistig gefordert",
+  "verblüffend", "hässlich", "tieferer Sinn", "ergriffen", "melancholisch",
+  "energetisiert", "ärgerlich", "verzaubert", "langweilig", "entspannend",
+  "Einsicht", "amüsant", "traurig", "verwirrt", "aggressiv",
+  "sentimale Gefühle", "beunruhigend", "nostalgisch", "überraschend", "beklemmend",
+  "erhaben", "beflügelnd", "gleichgültig", "beeindruckt", "geschmackslos",
+  "berührend", "verstörend", "interesse", "glücklich", "ehrfurcht",
+  "Tatendrang", "belustigend"
+)
+
+aesthemos_questions_en <- c(
+  "feeling of beauty/liking", "intellectual challenge", "joy", "relaxation", "interest",
+  "feeling of beauty/liking", "fascination", "enchantment", "vitality", "intellectual challenge",
+  "suprise", "feeling of ugliness", "insight", "being moved", "sadness",
+  "energy", "anger", "enchantment", "boredom", "relaxation",
+  "insight", "humor", "sadness", "confusion", "anger",
+  "nostalgia", "uneasiness", "nostalgia", "suprise", "uneasiness",
+  "awe", "vitality", "boredom", "fascination", "feeling of ugliness",
+  "being moved", "confusion", "interest", "joy", "awe",
+  "energy", "humor"
+)
+
+aesthemos_emotion <- tibble(
+  Emotion = c(
+    "Feeling of beauty/liking", "Feeling of beauty/liking",
+    "Intellectual challenge", "Intellectual challenge",
+    "Joy", "Joy",
+    "Relaxation", "Relaxation",
+    "Interest", "Interest",
+    "Fascination", "Fascination",
+    "Enchantment", "Enchantment",
+    "Vitality", "Vitality",
+    "Surprise", "Surprise",
+    "Feeling of ugliness", "Feeling of ugliness",
+    "Insight", "Insight",
+    "Being moved", "Being moved",
+    "Sadness", "Sadness",
+    "Energy", "Energy",
+    "Anger", "Anger",
+    "Boredom", "Boredom",
+    "Humor", "Humor",
+    "Confusion", "Confusion",
+    "Nostalgia", "Nostalgia",
+    "Uneasiness", "Uneasiness",
+    "Awe", "Awe"
+  ),
+  iQuestion = c(
+    1, 6,
+    2, 10,
+    3, 39,
+    4, 20,
+    5, 38,
+    7, 34,
+    8, 18,
+    9, 32,
+    11, 29,
+    12, 35,
+    13, 21,
+    14, 36,
+    15, 23,
+    16, 41,
+    17, 25,
+    19, 33,
+    22, 42,
+    24, 37,
+    26, 28,
+    27, 30,
+    31, 40
+  )
+) |>
+  mutate(Emotion = fct_inorder(factor(Emotion)))
+
+```
+
+
+## Import data
+```{r}
+results <- read_csv("data/data_ArtStudyBamberg_2025-07-21_17-22.csv") 
+```
+
+## Aesthemos
+
+### Extracting questions and adding information on emotions
+```{r}
+aesthemos_df <-
+  results |>
+  select(CASE, RA01, matches("^(B|H|L|W)001")) |>
+  pivot_longer(matches("^(B|H|L|W)001"), names_to = "Question", values_to = "Response") |>
+  mutate(Artist = factor(str_sub(Question, 1, 1), levels = names(artists), labels = artists),
+         iQuestion = as.integer(str_extract(Question, "\\d{2}$")),
+         Question = factor(iQuestion, labels = aesthemos_questions_en),
+         Response = factor(Response, levels = 1:5)) |>
+  left_join(conditions_df, by = c("RA01" = "Condition", "Artist" = "Artist")) |>
+  left_join(aesthemos_emotion, by = c("iQuestion"))
+```
+
+
+### Plotting distribution of responses
+```{r}
+aesthemos_behavior <- kilter::bootstrap_response_counts(aesthemos_df, Response ~ Artist + Presentation + Emotion, R = 100)
+for(emotion in unique(aesthemos_emotion$Emotion)) {
+  emotion_plots <- list()
+  
+  for(artist in artists) {
+    emotion_plots[[artist]] <-
+      aesthemos_behavior |>
+      filter(Artist == artist, Emotion == emotion) |>
+      kilter::plot_responses(x = Response, y = P, ymin = LowerCI, ymax = UpperCI, color = Presentation) +
+      labs(subtitle = artist)
+    
+    if (artist != artists[4]) emotion_plots[[artist]]<- emotion_plots[[artist]] + theme(legend.position = "none")
+  }
+
+  patchwork::wrap_plots(emotion_plots) + patchwork::plot_annotation(title = emotion)
+  ggsave(glue("Figures/behavior/{str_replace_all(emotion, '/', ' ')}.png"), units = "cm", width = 24, height = 12)
+}
+```
+
+### Bayesian models
+```{r}
+model_names <- c("artist-and-condition")
+models <- purrr::map(model_names, ~cmdstan_model(glue("Stan/{.}.stan")))
+names(models) <- model_names
+
+stan_data <- list(
+  N = nrow(aesthemos_df),
+  ArtistsN = nlevels(aesthemos_df$Artist),
+  EmotionsN = nlevels(aesthemos_df$Emotion),
+  PresentationsN = nlevels(aesthemos_df$Presentation),
+  MaxResponse = nlevels(aesthemos_df$Response),
+  
+  Response = as.integer(aesthemos_df$Response),
+  Artist = as.integer(aesthemos_df$Artist),
+  Emotion = as.integer(aesthemos_df$Emotion),
+  Presentation = as.integer(aesthemos_df$Presentation)
+)
+
+aesthemos_fit <- models[["artist-and-condition"]]$sample(stan_data, chains  = 4, parallel_chains = future::availableCores())
+aesthemos_draws <- aesthemos_fit$draws(format = "df") |> as_tibble()
+saveRDS(aesthemos_draws, 'aesthemos_draws.RDS')
+```
+
+### Plotting posterior distributions for responses
+```{r}
+eta <- kilter::parse_stan_posterior_array(aesthemos_draws, "eta", list("Artist" = levels(aesthemos_df$Artist), "Emotion" = levels(aesthemos_df$Emotion), "Presentation" = levels(aesthemos_df$Presentation)), "eta") |>
+  mutate(eta = kilter::inv_logit(eta))
+
+emotion <- levels(aesthemos_df$Emotion)[3]
+eta |>
+  filter(Emotion == emotion) |>
+ggplot(aes(x = Presentation, y = kilter::inv_logit(eta), fill = Presentation)) +
+  geom_violin(alpha = 0.75, show.legend = FALSE) +
+  facet_wrap(. ~ Artist) +
+  labs(title = emotion)
+
+
+for(artist in levels(aesthemos_df$Artist)){
+  presentation_difference <-
+    eta |>
+    pivot_wider(names_from = Presentation, values_from = eta) |>
+    mutate(Difference = schizophrenic - neutral) |>
+    group_by(Artist, Emotion) |>
+    summarise(Avg = mean(Difference),
+              LowerCI = kilter::lower_ci(Difference),
+              UpperCI = kilter::upper_ci(Difference),
+              P = ifelse(sign(median(Difference)) > 0, mean(Difference > 0),mean(Difference < 0)),
+              .groups = "drop") |>
+    mutate(Info = sprintf("%s\nS-N=%.2f [%.2f,%.2f]\nP=%.1f%%", Emotion, Avg, LowerCI, UpperCI, 100 * P))
+  
+  artist_df <- filter(eta, Artist == artist)
+  artist_presentation <- filter(presentation_difference, Artist == artist)
+  artist_facets <- artist_presentation$Info
+  names(artist_facets) <- artist_presentation$Emotion
+  
+  
+     
+  ggplot(left_join(artist_df, artist_presentation |> select(Emotion, P), by = "Emotion"), aes(x = Presentation, y = eta, fill = Presentation)) +
+    geom_violin(show.legend = FALSE, aes(alpha = P >0.9)) +
+    facet_wrap(. ~ Emotion, labeller = labeller(Emotion = artist_facets)) +
+    labs(title = artist)
+  
+  
+  ggsave(glue("Figures/response-{artist}.png"), units = "cm", width = 32, height = 24)
+}
+```
+
+## ML inverse approach: predict condition from responses
+
+Preparing a wide table with one row per artist for each participants (i.e., each participant gets four rows)
+```{r}
+responses_wide <-
+  results |>
+  select(CASE, RA01, matches("^(B|H|L|W)00")) |>
+  select(where(~ !is.character(.))) |>
+  pivot_longer(matches("^(B|H|L|W)00"), names_to = "Question", values_to = "Response") |>
+  mutate(Artist = factor(str_sub(Question, 1, 1), levels = names(artists), labels = artists),
+         Question = str_sub(Question, 2)) |>
+  pivot_wider(names_from = Question, values_from = Response) |>
+  left_join(conditions_df, by = c("RA01" = "Condition", "Artist" = "Artist")) |>
+  select(-RA01) |>
+  relocate(CASE, Artist, Presentation)
+```
+
+Fitting random forest using leave-one out cross validation
+```{r}
+# 10-fold cross-validation repeated ten times
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 10)
+
+# predict presentation from all responses and 
+ml_fit <- train(Presentation ~ .,
+                data = select(responses_wide, -CASE), 
+                method = 'rf',
+                trControl = trainControl(method = "LOOCV", savePredictions = "final"))
+
+correctly_predicted <- ml_fit$pred$pred == ml_fit$pred$obs
+cat(sprintf("LOO CV performance: %.2f [%.2f, %.2f]", mean(correctly_predicted), binom::binom.exact(sum(correctly_predicted), length(correctly_predicted))$lower, binom::binom.exact(sum(correctly_predicted), length(correctly_predicted))$upper))
+```
+
+Variable important
+```{r}
+varImp(ml_fit)
+```
+
