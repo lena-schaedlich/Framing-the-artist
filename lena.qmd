@@ -1,0 +1,261 @@
+---
+title: "analysis"
+format: html
+---
+
+## Libraries and settings required for analysis
+```{r setup}
+library(tidyverse)
+
+library(binom)
+library(caret)
+library(cmdstanr)
+library(glue)
+library(kilter) # devtools::install_github("alexander-pastukhov/kilter", dependencies=TRUE)
+library(patchwork)
+```
+
+
+## Data import
+
+Definitions
+```{r}
+artists <- c("B" = "Bodett", "H" = "Hammer", "L" = "Lohse-Wächter", "W" = "Wölfli")
+
+conditions_df <-
+  bind_rows(
+    tibble(Condition = 1,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("schizophrenic", "schizophrenic", "neutral", "neutral")),
+    tibble(Condition = 2,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("schizophrenic", "neutral", "schizophrenic", "neutral")),
+    tibble(Condition = 3,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("schizophrenic", "neutral", "neutral", "schizophrenic")),
+    tibble(Condition = 4,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("neutral", "schizophrenic", "schizophrenic", "neutral")),
+    tibble(Condition = 5,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("neutral", "schizophrenic", "neutral", "schizophrenic")),
+    tibble(Condition = 6,
+           Artist = c("Bodett", "Hammer", "Lohse-Wächter", "Wölfli"),
+           Presentation = c("neutral", "neutral", "schizophrenic", "schizophrenic"))
+  ) |>
+  mutate(Artist = factor(Artist, levels = artists),
+         Presentation = factor(Presentation, levels = c("neutral", "schizophrenic")))
+
+aesthemos_questions_de = c(
+  "schön", "intellektuell", "erfreut", "beruhigt", "neugierig",
+  "gefallen", "faszinieren", "wunderbar", "belebend", "geistig gefordert",
+  "verblüffend", "hässlich", "tieferer Sinn", "ergriffen", "melancholisch",
+  "energetisiert", "ärgerlich", "verzaubert", "langweilig", "entspannend",
+  "Einsicht", "amüsant", "traurig", "verwirrt", "aggressiv",
+  "sentimale Gefühle", "beunruhigend", "nostalgisch", "überraschend", "beklemmend",
+  "erhaben", "beflügelnd", "gleichgültig", "beeindruckt", "geschmackslos",
+  "berührend", "verstörend", "interesse", "glücklich", "ehrfurcht",
+  "Tatendrang", "belustigend"
+)
+
+aesthemos_questions_en <- c(
+  "feeling of beauty/liking", "intellectual challenge", "joy", "relaxation", "interest",
+  "feeling of beauty/liking", "fascination", "enchantment", "vitality", "intellectual challenge",
+  "suprise", "feeling of ugliness", "insight", "being moved", "sadness",
+  "energy", "anger", "enchantment", "boredom", "relaxation",
+  "insight", "humor", "sadness", "confusion", "anger",
+  "nostalgia", "uneasiness", "nostalgia", "suprise", "uneasiness",
+  "awe", "vitality", "boredom", "fascination", "feeling of ugliness",
+  "being moved", "confusion", "interest", "joy", "awe",
+  "energy", "humor"
+)
+
+aesthemos_emotion <- tibble(
+  Emotion = c(
+    "Feeling of beauty/liking", "Feeling of beauty/liking",
+    "Intellectual challenge", "Intellectual challenge",
+    "Joy", "Joy",
+    "Relaxation", "Relaxation",
+    "Interest", "Interest",
+    "Fascination", "Fascination",
+    "Enchantment", "Enchantment",
+    "Vitality", "Vitality",
+    "Surprise", "Surprise",
+    "Feeling of ugliness", "Feeling of ugliness",
+    "Insight", "Insight",
+    "Being moved", "Being moved",
+    "Sadness", "Sadness",
+    "Energy", "Energy",
+    "Anger", "Anger",
+    "Boredom", "Boredom",
+    "Humor", "Humor",
+    "Confusion", "Confusion",
+    "Nostalgia", "Nostalgia",
+    "Uneasiness", "Uneasiness",
+    "Awe", "Awe"
+  ),
+  iQuestion = c(
+    1, 6,
+    2, 10,
+    3, 39,
+    4, 20,
+    5, 38,
+    7, 34,
+    8, 18,
+    9, 32,
+    11, 29,
+    12, 35,
+    13, 21,
+    14, 36,
+    15, 23,
+    16, 41,
+    17, 25,
+    19, 33,
+    22, 42,
+    24, 37,
+    26, 28,
+    27, 30,
+    31, 40
+  )
+) |>
+  mutate(Emotion = fct_inorder(factor(Emotion)))
+
+filename <- fs::dir_ls("data/", glob="*.csv")
+col_names <- names(read_csv(filename, n_max = 0))
+```
+
+
+## Import data
+```{r}
+# create list for specifying the column structure
+type_list <- map(col_names, function(name) {
+  if (grepl("^(B|H|L|W)001", name)) {
+    col_integer()
+  } 
+  else if (grepl("^(B|H|L|W)002", name)) {
+    col_integer()
+  }
+  else if (grepl("^(SB|SH|SL|SW)0", name)) {
+    col_integer()
+  }
+  else if (grepl("^(SI|SM)01", name)) {
+    col_integer()
+  }
+  else if (grepl("^(S006|S007)", name)) {
+    col_integer()
+  }
+  else if (grepl("^EV04_", name)) {
+    col_integer()
+  }
+  else if (grepl("^KE01", name)) {
+    col_integer()
+  }
+  else if (name == "KE03") {
+    col_integer()
+  }
+  else if (name == "RA01") {
+    col_integer()
+  }
+  else if (name == "SD01") {
+    col_integer()
+  }
+  else if (name == "SD02_01") {
+    col_integer()
+  }
+  else if (name == "SD11") {
+    col_integer()
+  }
+  else if (name == "SD17") {
+    col_integer()
+  }
+  else if (name == "CASE") {
+    col_integer()
+  }
+  else if (name == "SD15_01") {
+    col_character()
+  }
+  else if (name == "SD15_01a") {
+    col_integer()
+  }
+  else if (name == "SD02_01") {
+    col_integer()
+  }
+  else {
+    col_skip()
+  }
+})
+
+results <-   
+  read_csv(filename, col_types = do.call(cols, type_list)) |>
+  # turning selected variables into factors or Boolean
+  mutate(across(matches("^(B|H|L|W)001"), ~ factor(.x, levels = c("1", "2", "3", "4", "5"))), # AESTHEMOS items
+         across(matches("^(B|H|L|W)002"), ~ factor(.x, levels = c("1", "2", "3", "4", "5"))), # aesthetic items
+         across(matches("^(SB|SH|SL|SW)0"), ~ factor(.x, levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9"))), # SAM
+         across(matches("^(S006|S007)"), ~ factor(.x, levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9"))), # baseline SAM
+         across(matches("^KE01"), ~ factor(.x, levels = c("1", "2", "3", "4", "5"), ordered = TRUE)),
+         across(matches("^SI"), ~ factor(.x, levels = c("1", "2", "3", "4"), ordered = TRUE)), # screening schizophrenia
+         across(matches("^SM"), ~ factor(.x, levels = c("1", "2", "3", "4", "5"), ordered = TRUE)), # other screenings
+         SD11 = factor(SD11, levels = c("1", "3", "4", "5", "6", "7", "8", "9", "10"), labels = c("ohne Abschluss", "Quali", "Mittlere Reife", "abgeschlossene Lehre", "Fachabitur", "Abitur", "Hochschulabschluss", "Schüler", "anderer Abschluss")), # education
+         SD01 = factor(SD01, levels = c("1", "2", "3", "4"), labels = c("female", "male", "other", "no entry")), # gender
+         #RA01 = factor(RA01, levels = c("1", "2", "3", "4", "5", "6")), # randomization group
+         across(matches("^EV04_"), ~ ifelse(.x == 2, TRUE, FALSE)), # artwork known
+         SD17 = ifelse(SD17 == 2, TRUE, FALSE), # normal color vision
+         SD15_01a = ifelse(SD15_01a == 1, TRUE, FALSE),
+         KE03 = ifelse(KE03 == 1, TRUE, FALSE)) # doing arts themselves
+```
+## sozio-demographic data
+```{r sozio-demographic}
+soz_dem <- results |>
+  select(SD02_01, SD01, SD11, SD15_01, SD15_01a, KE01_01, KE01_02, KE01_03, KE01_04, KE03)|>
+  rename(age = SD02_01, gender = SD01, education = SD11, job = SD15_01, art_meaning = KE01_01, art_knowledge = KE01_02, art_independence = KE01_03, artist_fascination = KE01_04, doing_art = KE03)
+
+
+age <- soz_dem|>
+  group_by(gender)|>
+  summarize(n = n(),
+            mean_age = mean(age),
+            min_age = min(age),
+            max_age = max(age))|>
+  mutate(overall_age = mean(soz_dem[["age"]]))
+
+edu <- soz_dem|>
+  group_by(education)|>
+  summarize(n = n())
+
+
+## prior art experience/knowledge
+soz_dem|>
+  group_by(doing_art)|>
+  summarize(n = n(),
+            .groups = "drop")|>
+  mutate(Proportion = n/sum(n))
+
+art_q <- c("art_independence", "art_knowledge", "art_meaning", "artist_fascination")
+art <- soz_dem|>
+  select(art_q)|>
+  tidyr::pivot_longer(
+    cols=art_q, names_to = "Scale", values_to = "Response")|>
+  group_by(Scale, Response)|>
+  summarise(n = n(),
+            .groups = "drop")|>
+  mutate(Proportion = n/n())
+
+ggplot(art, aes(x = Response, y = Proportion, fill = Scale)) + 
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("#FF3300", "#E04BA0", "#9E56EC","#5959FF"))
+ggsave("Figures/prior-art-exp.png", units = "cm", width = 16, height = 8)
+```
+
+```{r}
+art_cognitive <- art_wide|>
+  filter(Scale == "art_knowledge")
+
+art_affective <- art_wide|>
+  filter(Scale != "art_knowledge")|>
+  group_by(Response)|>
+  summarise(n = sum(n),
+            .groups = "drop")|>
+  mutate(Proportion = n/sum(n))
+```
+
+
