@@ -120,6 +120,23 @@ aesthemos_emotion <- tibble(
 ) |>
   mutate(Emotion = fct_inorder(factor(Emotion)))
 
+aesthetics_dimension <- tibble(
+  Dimension = c(
+    "Aura", "Want to get to know artist",
+    "Expressive", "Aesthetic",
+    "Fascinating Style", "Present",
+    "Reflecting Life", "Reflecting Person",
+    "Immerse in Artwork", "Quality",
+    "Originality", "Uniqueness",
+    "Creativity", "Intense Emotions",
+    "Artist's biography reflected", "Wanting to have the artwork"
+  ),
+  jQuestion = c(
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+  )
+) |>
+  mutate(Dimension = fct_inorder(factor(Dimension)))
+
 filename <- fs::dir_ls("data/", glob="*.csv")
 col_names <- names(read_csv(filename, n_max = 0))
 ```
@@ -203,6 +220,7 @@ results <-
          SD15_01a = ifelse(SD15_01a == 1, TRUE, FALSE),
          KE03 = ifelse(KE03 == 1, TRUE, FALSE)) # doing arts themselves
 ```
+
 ## sozio-demographic data
 ```{r sozio-demographic}
 soz_dem <- results |>
@@ -258,4 +276,162 @@ art_affective <- art_wide|>
   mutate(Proportion = n/sum(n))
 ```
 
+## Aesthemos
+### selecting plots
+```{r}
+selected_emotions <- c("Fascination","Boredom", "Feeling of beauty/liking")
 
+aesthemos_draws <- readRDS("aesthemos_draws.RDS")
+eta <- kilter::parse_stan_posterior_array(aesthemos_draws, "eta", list("Artist" = levels(aesthemos_df$Artist), "Emotion" = levels(aesthemos_df$Emotion), "Presentation" = levels(aesthemos_df$Presentation)), "eta") |>
+  mutate(eta = kilter::inv_logit(eta))
+
+emotion <- levels(aesthemos_df$Emotion)[3]
+eta |>
+  filter(Emotion == emotion) |>
+ggplot(aes(x = Presentation, y = kilter::inv_logit(eta), fill = Presentation)) +
+  geom_violin(alpha = 0.75, show.legend = FALSE) +
+  facet_wrap(. ~ Artist) +
+  scale_fill_manual(values = c("neutral" = "#FF3300", "schizophrenic" = "#5959FF")) +
+  labs(title = emotion)
+
+
+for(artist in levels(aesthemos_df$Artist)){
+  presentation_difference <-
+    eta |>
+    pivot_wider(names_from = Presentation, values_from = eta) |>
+    mutate(Difference = schizophrenic - neutral) |>
+    group_by(Artist, Emotion) |>
+    summarise(Avg = mean(Difference),
+              LowerCI = kilter::lower_ci(Difference),
+              UpperCI = kilter::upper_ci(Difference),
+              P = ifelse(sign(median(Difference)) > 0, mean(Difference > 0),mean(Difference < 0)),
+              .groups = "drop") |>
+    mutate(Info = sprintf("%s\nS-N=%.2f [%.2f,%.2f]\nP=%.1f%%", Emotion, Avg, LowerCI, UpperCI, 100 * P))
+  
+  artist_df <- filter(eta, Artist == artist)
+  artist_presentation <- filter(presentation_difference, Artist == artist)
+  artist_facets <- artist_presentation$Info
+  names(artist_facets) <- artist_presentation$Emotion
+  
+  
+     
+  ggplot(left_join(artist_df, artist_presentation |> select(Emotion, P), by = "Emotion")|>
+    filter(map_lgl(Emotion, ~ any(selected_emotions %in% .x))), aes(x = Presentation, y = eta, fill = Presentation)) +
+    geom_violin(show.legend = FALSE, aes(alpha = P >0.90)) +
+    facet_wrap(. ~ Emotion, labeller = labeller(Emotion = artist_facets)) +
+    scale_fill_manual(values = c("neutral" = "#FF3300", "schizophrenic" = "#5959FF")) +
+    labs(title = artist)
+  
+  
+  ggsave(glue("Figures/response-{artist}-short.png"), units = "cm", width = 24, height = 8)
+}
+```
+
+
+## Aesthetics
+
+### Extracting questions and adding information on emotions
+```{r}
+aesthetics_df <-
+  results |>
+  select(CASE, RA01, matches("^(B|H|L|W)002")) |>
+  pivot_longer(matches("^(B|H|L|W)002"), names_to = "Question", values_to = "Response") |>
+  mutate(Artist = factor(str_sub(Question, 1, 1), levels = names(artists), labels = artists),
+         jQuestion = as.integer(str_extract(Question, "\\d{2}$")),
+         Question = factor(jQuestion, labels = aesthetics_dimension[["Dimension"]]),
+         Response = factor(Response, levels = 1:5)) |>
+  left_join(conditions_df, by = c("RA01" = "Condition", "Artist" = "Artist")) |>
+  left_join(aesthetics_dimension, by = c("jQuestion"))
+```
+
+### Plotting distribution of responses
+```{r}
+aesthetics_behavior <- kilter::bootstrap_response_counts(aesthetics_df, Response ~ Artist + Presentation + Dimension, R = 100)
+for(dimension in unique(aesthetics_dimension$Dimension)) {
+  aesthetics_plots <- list()
+  
+  for(artist in artists) {
+    aesthetics_plots[[artist]] <-
+      aesthetics_behavior |>
+      filter(Artist == artist, Dimension == dimension) |>
+      kilter::plot_responses(x = Response, y = P, ymin = LowerCI, ymax = UpperCI, color = Presentation) +
+      labs(subtitle = artist)
+    
+    if (artist != artists[4]) aesthetics_plots[[artist]] <- aesthetics_plots[[artist]] + theme(legend.position = "none")
+  }
+
+  patchwork::wrap_plots(aesthetics_plots) + patchwork::plot_annotation(title = dimension)
+  ggsave(glue("Figures/behavior/{str_replace_all(dimension, '/', ' ')}.png"), units = "cm", width = 24, height = 12)
+}
+```
+
+### Bayesian models
+```{r}
+model_names <- c("artist-and-condition")
+models <- purrr::map(model_names, ~cmdstan_model(glue("Stan/{.}.stan")))
+names(models) <- model_names
+
+stan_data <- list(
+  N = nrow(aesthetics_df),
+  ArtistsN = nlevels(aesthetics_df$Artist),
+  EmotionsN = nlevels(aesthetics_df$Dimension),
+  PresentationsN = nlevels(aesthetics_df$Presentation),
+  MaxResponse = nlevels(aesthetics_df$Response),
+  
+  Response = as.integer(aesthetics_df$Response),
+  Artist = as.integer(aesthetics_df$Artist),
+  Emotion = as.integer(aesthetics_df$Dimension),
+  Presentation = as.integer(aesthetics_df$Presentation)
+)
+
+aesthetics_fit <- models[["artist-and-condition"]]$sample(stan_data, chains  = 4, parallel_chains = future::availableCores())
+aesthetics_draws <- aesthetics_fit$draws(format = "df") |> as_tibble()
+saveRDS(aesthetics_draws, 'aesthetics_draws.RDS')
+```
+
+### Plotting posterior distributions for responses
+```{r}
+aesthetics_draws <- readRDS("aesthetics_draws.RDS")
+eta <- kilter::parse_stan_posterior_array(aesthetics_draws, "eta", list("Artist" = levels(aesthetics_df$Artist), "Dimension" = levels(aesthetics_df$Dimension), "Presentation" = levels(aesthetics_df$Presentation)), "eta") |>
+  mutate(eta = kilter::inv_logit(eta))
+
+dimension <- levels(aesthetics_df$Dimension)[3]
+eta |>
+  filter(Dimension == dimension) |>
+ggplot(aes(x = Presentation, y = kilter::inv_logit(eta), fill = Presentation)) +
+  geom_violin(alpha = 0.75, show.legend = FALSE) +
+  facet_wrap(. ~ Artist) +
+  scale_fill_manual(values = c("neutral" = "#FF3300", "schizophrenic" = "#5959FF")) +
+  labs(title = dimension)
+
+
+for(artist in levels(aesthetics_df$Artist)){
+  presentation_difference <-
+    eta |>
+    pivot_wider(names_from = Presentation, values_from = eta) |>
+    mutate(Difference = schizophrenic - neutral) |>
+    group_by(Artist, Dimension) |>
+    summarise(Avg = mean(Difference),
+              LowerCI = kilter::lower_ci(Difference),
+              UpperCI = kilter::upper_ci(Difference),
+              P = ifelse(sign(median(Difference)) > 0, mean(Difference > 0),mean(Difference < 0)),
+              .groups = "drop") |>
+    mutate(Info = sprintf("%s\nS-N=%.2f [%.2f,%.2f]\nP=%.1f%%", Dimension, Avg, LowerCI, UpperCI, 100 * P))
+  
+  artist_df <- filter(eta, Artist == artist)
+  artist_presentation <- filter(presentation_difference, Artist == artist)
+  artist_facets <- artist_presentation$Info
+  names(artist_facets) <- artist_presentation$Dimension
+  
+  
+     
+  ggplot(left_join(artist_df, artist_presentation |> select(Dimension, P), by = "Dimension"), aes(x = Presentation, y = eta, fill = Presentation)) +
+    geom_violin(show.legend = FALSE, aes(alpha = P >0.90)) +
+    facet_wrap(. ~ Dimension, labeller = labeller(Dimension = artist_facets)) +
+    scale_fill_manual(values = c("neutral" = "#FF3300", "schizophrenic" = "#5959FF")) +
+    labs(title = artist)
+  
+  
+  ggsave(glue("Figures/response-aesthetics-{artist}.png"), units = "cm", width = 32, height = 24)
+}
+```
