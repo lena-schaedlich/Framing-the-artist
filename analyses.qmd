@@ -1,5 +1,5 @@
 ---
-title: "analysis"
+title: "analyses"
 format: html
 ---
 
@@ -204,17 +204,10 @@ type_list <- map(col_names, function(name) {
 
 results <-   
   read_csv(filename, col_types = do.call(cols, type_list)) |>
-  # turning selected variables into factors or Boolean
-  mutate(across(matches("^(B|H|L|W)001"), ~ factor(.x, levels = c("1", "2", "3", "4", "5"))), # AESTHEMOS items
-         across(matches("^(B|H|L|W)002"), ~ factor(.x, levels = c("1", "2", "3", "4", "5"))), # aesthetic items
-         across(matches("^(SB|SH|SL|SW)0"), ~ factor(.x, levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9"))), # SAM
-         across(matches("^(S006|S007)"), ~ factor(.x, levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9"))), # baseline SAM
-         across(matches("^KE01"), ~ factor(.x, levels = c("1", "2", "3", "4", "5"), ordered = TRUE)),
-         across(matches("^SI"), ~ factor(.x, levels = c("1", "2", "3", "4"), ordered = TRUE)), # screening schizophrenia
-         across(matches("^SM"), ~ factor(.x, levels = c("1", "2", "3", "4", "5"), ordered = TRUE)), # other screenings
+  # turning selected (sozio-demographic) variables into factors or Boolean
+  mutate(across(matches("^KE01"), ~ factor(.x, levels = c("1", "2", "3", "4", "5"), ordered = TRUE)), # prior art experience/knowledge
          SD11 = factor(SD11, levels = c("1", "3", "4", "5", "6", "7", "8", "9", "10"), labels = c("ohne Abschluss", "Quali", "Mittlere Reife", "abgeschlossene Lehre", "Fachabitur", "Abitur", "Hochschulabschluss", "Schüler", "anderer Abschluss")), # education
          SD01 = factor(SD01, levels = c("1", "2", "3", "4"), labels = c("female", "male", "other", "no entry")), # gender
-         #RA01 = factor(RA01, levels = c("1", "2", "3", "4", "5", "6")), # randomization group
          across(matches("^EV04_"), ~ ifelse(.x == 2, TRUE, FALSE)), # artwork known
          SD17 = ifelse(SD17 == 2, TRUE, FALSE), # normal color vision
          SD15_01a = ifelse(SD15_01a == 1, TRUE, FALSE),
@@ -227,7 +220,11 @@ soz_dem <- results |>
   select(SD02_01, SD01, SD11, SD15_01, SD15_01a, KE01_01, KE01_02, KE01_03, KE01_04, KE03)|>
   rename(age = SD02_01, gender = SD01, education = SD11, job = SD15_01, art_meaning = KE01_01, art_knowledge = KE01_02, art_independence = KE01_03, artist_fascination = KE01_04, doing_art = KE03)
 
-
+# age: mean and sd 
+mean_age <- soz_dem|>
+  summarize(mean_age = mean(age),
+            sd_age = sd(age))
+# age per gender
 age <- soz_dem|>
   group_by(gender)|>
   summarize(n = n(),
@@ -236,13 +233,16 @@ age <- soz_dem|>
             max_age = max(age))|>
   mutate(overall_age = mean(soz_dem[["age"]]))
 
+
+# education
 edu <- soz_dem|>
   group_by(education)|>
   summarize(n = n())
 
 
-## prior art experience/knowledge
-soz_dem|>
+# prior art experience/knowledge
+doing_art <-
+  soz_dem|>
   group_by(doing_art)|>
   summarize(n = n(),
             .groups = "drop")|>
@@ -264,23 +264,70 @@ ggplot(art, aes(x = Response, y = Proportion, fill = Scale)) +
 ggsave("Figures/prior-art-exp.png", units = "cm", width = 16, height = 8)
 ```
 
-```{r}
-art_cognitive <- art_wide|>
-  filter(Scale == "art_knowledge")
-
-art_affective <- art_wide|>
-  filter(Scale != "art_knowledge")|>
-  group_by(Response)|>
-  summarise(n = sum(n),
-            .groups = "drop")|>
-  mutate(Proportion = n/sum(n))
-```
 
 ## Aesthemos
-### selecting plots
-```{r}
-selected_emotions <- c("Fascination","Boredom", "Feeling of beauty/liking")
 
+### Extracting questions and adding information on emotions
+```{r}
+aesthemos_df <-
+  results |>
+  select(CASE, RA01, matches("^(B|H|L|W)001")) |>
+  pivot_longer(matches("^(B|H|L|W)001"), names_to = "Question", values_to = "Response") |>
+  mutate(Artist = factor(str_sub(Question, 1, 1), levels = names(artists), labels = artists),
+         iQuestion = as.integer(str_extract(Question, "\\d{2}$")),
+         Question = factor(iQuestion, labels = aesthemos_questions_en),
+         Response = factor(Response, levels = 1:5)) |>
+  left_join(conditions_df, by = c("RA01" = "Condition", "Artist" = "Artist")) |>
+  left_join(aesthemos_emotion, by = c("iQuestion"))
+```
+
+### Plotting distribution of responses
+```{r}
+aesthemos_behavior <- kilter::bootstrap_response_counts(aesthemos_df, Response ~ Artist + Presentation + Emotion, R = 100)
+for(emotion in unique(aesthemos_emotion$Emotion)) {
+  emotion_plots <- list()
+  
+  for(artist in artists) {
+    emotion_plots[[artist]] <-
+      aesthemos_behavior |>
+      filter(Artist == artist, Emotion == emotion) |>
+      kilter::plot_responses(x = Response, y = P, ymin = LowerCI, ymax = UpperCI, color = Presentation) +
+      labs(subtitle = artist)
+    
+    if (artist != artists[4]) emotion_plots[[artist]]<- emotion_plots[[artist]] + theme(legend.position = "none")
+  }
+
+  patchwork::wrap_plots(emotion_plots) + patchwork::plot_annotation(title = emotion)
+  ggsave(glue("Figures/behavior/{str_replace_all(emotion, '/', ' ')}.png"), units = "cm", width = 24, height = 12)
+}
+```
+
+### Bayesian models
+```{r}
+model_names <- c("artist-and-condition")
+models <- purrr::map(model_names, ~cmdstan_model(glue("Stan/{.}.stan")))
+names(models) <- model_names
+
+stan_data <- list(
+  N = nrow(aesthemos_df),
+  ArtistsN = nlevels(aesthemos_df$Artist),
+  EmotionsN = nlevels(aesthemos_df$Emotion),
+  PresentationsN = nlevels(aesthemos_df$Presentation),
+  MaxResponse = nlevels(aesthemos_df$Response),
+  
+  Response = as.integer(aesthemos_df$Response),
+  Artist = as.integer(aesthemos_df$Artist),
+  Emotion = as.integer(aesthemos_df$Emotion),
+  Presentation = as.integer(aesthemos_df$Presentation)
+)
+
+aesthemos_fit <- models[["artist-and-condition"]]$sample(stan_data, chains  = 4, parallel_chains = future::availableCores())
+aesthemos_draws <- aesthemos_fit$draws(format = "df") |> as_tibble()
+saveRDS(aesthemos_draws, 'aesthemos_draws.RDS')
+```
+
+### Plotting posterior distributions for responses
+```{r}
 aesthemos_draws <- readRDS("aesthemos_draws.RDS")
 eta <- kilter::parse_stan_posterior_array(aesthemos_draws, "eta", list("Artist" = levels(aesthemos_df$Artist), "Emotion" = levels(aesthemos_df$Emotion), "Presentation" = levels(aesthemos_df$Presentation)), "eta") |>
   mutate(eta = kilter::inv_logit(eta))
@@ -314,21 +361,20 @@ for(artist in levels(aesthemos_df$Artist)){
   names(artist_facets) <- artist_presentation$Emotion
   
   
-     
-  ggplot(left_join(artist_df, artist_presentation |> select(Emotion, P), by = "Emotion")|>
-    filter(map_lgl(Emotion, ~ any(selected_emotions %in% .x))), aes(x = Presentation, y = eta, fill = Presentation)) +
-    geom_violin(show.legend = FALSE, aes(alpha = P >0.90)) +
+  ggplot(left_join(artist_df, artist_presentation |> select(Emotion, P), by = "Emotion"), aes(x = Presentation, y = eta, fill = Presentation)) +
+    geom_violin(show.legend = FALSE, aes(alpha = P > 0.90)) +
     facet_wrap(. ~ Emotion, labeller = labeller(Emotion = artist_facets)) +
     scale_fill_manual(values = c("neutral" = "#FF3300", "schizophrenic" = "#5959FF")) +
     labs(title = artist)
   
   
-  ggsave(glue("Figures/response-{artist}-short.png"), units = "cm", width = 24, height = 8)
+  ggsave(glue("Figures/response-aesthemos-{artist}.png"), units = "cm", width = 32, height = 24)
 }
 ```
 
 
-## Aesthetics
+
+## Self-constructed Aesthetics Items
 
 ### Extracting questions and adding information on emotions
 ```{r}
@@ -432,6 +478,47 @@ for(artist in levels(aesthetics_df$Artist)){
     labs(title = artist)
   
   
-  ggsave(glue("Figures/response-aesthetics-{artist}.png"), units = "cm", width = 32, height = 24)
+  ggsave(glue("Figures/response-aesthetics-{artist}.png"), units = "cm", width = 24, height = 8)
 }
+```
+
+
+
+## ML inverse approach: predict condition from responses
+
+Preparing a wide table with one row per artist for each participants (i.e., each participant gets four rows)
+```{r}
+responses_wide <-
+  results |>
+  select(CASE, RA01, matches("^(B|H|L|W)00")) |>
+  select(where(~ !is.character(.))) |>
+  pivot_longer(matches("^(B|H|L|W)00"), names_to = "Question", values_to = "Response") |>
+  mutate(Artist = factor(str_sub(Question, 1, 1), levels = names(artists), labels = artists),
+         Question = str_sub(Question, 2)) |>
+  pivot_wider(names_from = Question, values_from = Response) |>
+  left_join(conditions_df, by = c("RA01" = "Condition", "Artist" = "Artist")) |>
+  select(-RA01) |>
+  relocate(CASE, Artist, Presentation)
+```
+
+Fitting random forest using leave-one out cross validation
+```{r}
+# 10-fold cross-validation repeated ten times
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 10)
+
+# predict presentation from all responses and 
+ml_fit <- train(Presentation ~ .,
+                data = select(responses_wide, -CASE), 
+                method = 'rf',
+                trControl = trainControl(method = "LOOCV", savePredictions = "final"))
+
+correctly_predicted <- ml_fit$pred$pred == ml_fit$pred$obs
+cat(sprintf("LOO CV performance: %.2f [%.2f, %.2f]", mean(correctly_predicted), binom::binom.exact(sum(correctly_predicted), length(correctly_predicted))$lower, binom::binom.exact(sum(correctly_predicted), length(correctly_predicted))$upper))
+```
+
+Variable importance
+```{r}
+varImp(ml_fit)
 ```
