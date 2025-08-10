@@ -298,7 +298,7 @@ for(emotion in unique(aesthemos_emotion$Emotion)) {
   }
 
   patchwork::wrap_plots(emotion_plots) + patchwork::plot_annotation(title = emotion)
-  ggsave(glue("Figures/behavior/{str_replace_all(emotion, '/', ' ')}.png"), units = "cm", width = 24, height = 12)
+  ggsave(glue("Figures/behavior/aesthemos/{str_replace_all(emotion, '/', ' ')}.png"), units = "cm", width = 24, height = 12)
 }
 ```
 
@@ -368,7 +368,7 @@ for(artist in levels(aesthemos_df$Artist)){
     labs(title = artist)
   
   
-  ggsave(glue("Figures/response-aesthemos-{artist}.png"), units = "cm", width = 32, height = 24)
+  ggsave(glue("Figures/aesthemos/response-aesthemos-{artist}.png"), units = "cm", width = 32, height = 24)
 }
 ```
 
@@ -407,7 +407,7 @@ for(dimension in unique(aesthetics_dimension$Dimension)) {
   }
 
   patchwork::wrap_plots(aesthetics_plots) + patchwork::plot_annotation(title = dimension)
-  ggsave(glue("Figures/behavior/{str_replace_all(dimension, '/', ' ')}.png"), units = "cm", width = 24, height = 12)
+  ggsave(glue("Figures/behavior/aesthetics/{str_replace_all(dimension, '/', ' ')}.png"), units = "cm", width = 24, height = 12)
 }
 ```
 
@@ -478,7 +478,7 @@ for(artist in levels(aesthetics_df$Artist)){
     labs(title = artist)
   
   
-  ggsave(glue("Figures/response-aesthetics-{artist}.png"), units = "cm", width = 24, height = 8)
+  ggsave(glue("Figures/aesthetics/response-aesthetics-{artist}.png"), units = "cm", width = 32, height = 24)
 }
 ```
 
