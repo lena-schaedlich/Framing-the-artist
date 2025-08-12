@@ -256,11 +256,17 @@ art <- soz_dem|>
   group_by(Scale, Response)|>
   summarise(n = n(),
             .groups = "drop")|>
-  mutate(Proportion = n/n())
+  group_by(Scale)|>
+  mutate(Proportion = n/sum(n))
 
-ggplot(art, aes(x = Response, y = Proportion, fill = Scale)) + 
-  geom_col(position = "dodge") +
-  scale_fill_manual(values = c("#FF3300", "#E04BA0", "#9E56EC","#5959FF"))
+
+ggplot(art, aes(x = as.integer(Response), y = Proportion, color = Scale,  fill = Scale)) + 
+  geom_point() +
+  geom_line() +
+  scale_fill_manual(values = c("#FF3300", "#E04BA0", "#9E56EC","#5959FF"))+
+  scale_color_manual(values = c("#FF3300", "#E04BA0", "#9E56EC","#5959FF"))+
+  labs(x = "Response")+
+  scale_x_continuous()
 ggsave("Figures/prior-art-exp.png", units = "cm", width = 16, height = 8)
 ```
 
